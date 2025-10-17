@@ -1,0 +1,8 @@
+{ 
+	"cnp_server_mysql": {
+		"host": 		"localhost",
+		"user": 		"cnp-user",
+		"password": "cnp-password",
+		"database": "cnp-database"
+	}
+}
