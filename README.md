@@ -18,6 +18,8 @@ The name, email, address, country and country_code are not technically used by C
 
 Connections to the CNP server, as well as disconnections of different types, timeouts, signouts, etc. are logged in the cnphistory table.
 
+The mysql access credentials, (host, username, password, and database) are found in the config/default.json file. 
+
 - users
 	- userid
 	- name
