@@ -6,16 +6,22 @@
 //systemctl start c64os.cnpserver.service
 //systemctl stop  c64os.cnpserver.service
 
-const VERSION = "1.0";
+const VERSION = "1.5";
 
 console.log("Commodore Network Protocol (CNP) server v"+VERSION);
-console.log("Copyright (c) 2024 OpCoders Inc.\n");
+console.log("Copyright (c) 2025 OpCoders Inc.\n");
 
-const networkModule = require('net');
-const mysql 				= require('mysql');
-const cryptoJS 			= require("crypto-js");
-const { Buffer }    = require("node:buffer");
-const config 				= require('config');
+// const networkModule = require('net');
+// const mysql 				= require('mysql');
+// const cryptoJS 			= require("crypto-js");
+// const { Buffer }    = require("node:buffer");
+// const config 				= require('config');
+
+import networkModule from "net";
+import mysql 				 from "mysql";
+import cryptoJS 		 from "crypto-js";
+import { Buffer }    from "node:buffer";
+import config 			 from "config";
 
 const pt_alive_alt = 0x2d; "+";
 const pt_alive 	   = 0x2d; "-";
@@ -26,6 +32,9 @@ const pt_open  = 0x4f; "O";
 const pt_close = 0x43; "C";
 const pt_time  = 0x54; "T";
 
+const pt_pause  = 0x50; "P";
+const pt_resume = 0x52; "R";
+
 const pt_ack   = 0x41 ;"A";
 const pt_nak   = 0x4e ;"N";
 
@@ -35,6 +44,12 @@ var listenPort    = 6400;
 var authTimeout   = 10; 		 //10 Seconds
 var socketTimeout = 60 * 10; //10 Minutes
 var quietMode     = 0;
+
+const evt_authfail       = 0;
+const evt_authsuccess    = 1;
+const evt_sessionended   = 2;
+const evt_sessionclosed  = 3;
+const evt_sessiontimeout = 4;
 
 var connectedClients = [];
 
@@ -147,6 +162,34 @@ function connectToAuthServer(connectCallback) {
 	});
 }
 
+function logCNPSessionEvent(userId,eventType,socket) {
+
+	let ipAddress = socket.remoteAddress;
+
+	if(ipAddress.startsWith("::ffff:"))
+		ipAddress = ipAddress.substring(7); //strip "::ffff:"
+
+	authMySQLServer.query(`INSERT 
+													 INTO cnphistory (userid,
+													 									eventdate,
+													 									eventtype,
+													 									ipaddress)
+												 VALUES (?,
+												 				 NOW(),
+												 				 ?,
+												 				 ?)`,
+		[userId,
+		 eventType,
+		 ipAddress], 
+		 
+		function(err, result) {
+			if(err) {
+				console.log(`MySQL CNP session event log error.`);
+			}
+		}
+	);
+}
+
 connectToAuthServer();
 
 
@@ -184,6 +227,7 @@ const cnpServer = networkModule.createServer(function(cnpSocket) {
 			
 			if(testHash == userRecord.cnppwordhash) {
 				quietableLog("client authentication successful: "+userRecord.cnpusername);
+				logCNPSessionEvent(userRecord.userid,evt_authsuccess,cnpSocket);
 				
 				cnpSocket.removeListener("data",	 authenticationData);
 				cnpSocket.removeListener("timeout",authenticationTimeout);
@@ -191,6 +235,8 @@ const cnpServer = networkModule.createServer(function(cnpSocket) {
 				addClient(new cnpClient(cnpSocket,userRecord));
 			} else {
 				quietableLog("client authentication failed.");
+				logCNPSessionEvent(userRecord.userid,evt_authfail,cnpSocket);
+
 				cnpSocket.destroy();
 			}
 		}
@@ -205,7 +251,8 @@ const cnpServer = networkModule.createServer(function(cnpSocket) {
 		authParts[0] = authParts[0].trim();
 		authParts[1] = authParts[1].trim();
 
-		authMySQLServer.query(`SELECT name,
+		authMySQLServer.query(`SELECT userid,
+																	name,
 																	cnpusername,
 																	cnppwordsalt,
 																	cnppwordhash
@@ -234,21 +281,18 @@ cnpServer.listen(listenPort);
 function addClient(client) {
 	var alreadyConnected = false;
 
-	var remoteAddressPort = client.cnpSocket.remoteAddress+":"+client.cnpSocket.remotePort;
-
-	connectedClients.forEach(function(value,index) {
-		if(alreadyConnected)
-			return;
-		
-		if(this[index] == client) {
+	for(var i=0;i<connectedClients.length;i++) {
+		if(connectedClients[i] == client) {
 			alreadyConnected = true;
-			return;
+			break;
 		}
-	});
-	
+	}
+
 	if(!alreadyConnected)
 		connectedClients.push(client);
 		
+	var remoteAddressPort = client.cnpSocket.remoteAddress+":"+client.cnpSocket.remotePort;
+
 	quietableLog("client connected from: "+remoteAddressPort);
 	quietableLog("total clients: "+connectedClients.length);
 }
@@ -300,6 +344,9 @@ class cnpClient {
 
 		this.cnpSocket.on('timeout',function() {
 			quietableLog("client connection timed out. "+this.cnpClient.userRecord.cnpusername);
+			logCNPSessionEvent(userRecord.userid,
+												 evt_sessiontimeout,
+												 cnpSocket);
 		
 			this.destroy();
 			this.cnpClient.destruct();
@@ -307,6 +354,9 @@ class cnpClient {
 
 		this.cnpSocket.on('end',function() {
 			quietableLog("client connection ended. "+this.cnpClient.userRecord.cnpusername);
+			logCNPSessionEvent(userRecord.userid,
+												 evt_sessionclosed,
+												 cnpSocket);
 		
 			this.destroy();
 			this.cnpClient.destruct();
@@ -352,9 +402,11 @@ class cnpClient {
 						this.packetHeaderIndex = 0;
 					}
 				break;
-				
+
 				case pt_close:
 				case pt_time:
+				case pt_pause:
+				case pt_resume:
 				case pt_ack:
 				case pt_nak:
 					if(this.packetHeaderIndex == 2) {
@@ -391,6 +443,11 @@ class cnpClient {
 					this.XSockets[i].close();
 
 				this.XSockets = [];
+
+				logCNPSessionEvent(this.userRecord.userid,
+													 evt_sessionended,
+													 this.cnpSocket);
+
 				
 				this.cnpSocket.destroy();
 				this.destruct();
@@ -453,6 +510,8 @@ class cnpPacket {
 		switch(this.type) {
 			case pt_close:
 			case pt_time:
+			case pt_pause:
+			case pt_resume:
 			case pt_ack:
 			case pt_nak:
 				if(!this.xSocket) {
@@ -470,6 +529,15 @@ class cnpPacket {
 				//fallthrough...
 			case pt_time:
 				this.xSocket.close();
+				return;
+			break;
+
+			case pt_pause:
+				this.xSocket.pauseTransmission();
+				return;
+			break;
+			case pt_resume:
+				this.xSocket.resumeTransmission();
 				return;
 			break;
 
@@ -578,6 +646,11 @@ class cnpXSocket {
 		this.sentClosePacket = 0;
 		this.sentDataPacket  = 0;
 
+		this.ackTimer 			 = null;
+		this.ackTimeoutCount = 0;
+
+		this.pauseTxFlow = false;
+
 		//Remote Socket		
 		this.socket = new networkModule.Socket();
 		
@@ -635,7 +708,74 @@ class cnpXSocket {
 		this.cnpClient.cnpSocket.write(packet);
 	}
 
+	//Pause and Resume work like two halves of an ACK.
+
+	//A Pause packet serves to ACK the receipt of the previous packet,
+	//but doesn't proceed to send the next packet.
+
+	//A Resume packet follows a Pause packet and allows the next
+	//packet to be sent.
+
+	pauseTransmission() {
+		if(this.ackTimer) {
+			//console.log("Got PAUSE. Canceling ackTimer.");
+			clearTimeout(this.ackTimer);
+			this.ackTimer 			 = null;
+			this.ackTimeoutCount = 0;
+		}
+	
+		if(this.sentClosePacket) {
+			//console.log("XSocket gotAck for close socket packet");
+			return this.close();
+		}
+		
+		//Only need to pause if the socket is still open.
+		this.pauseTxFlow = true;
+	}
+
+	resumeTransmission() {
+		this.pauseTxFlow = false;
+		
+		if(this.sentDataPacket)	{
+			//console.log("XSocket gotAck for sent data packet");
+			this.sentDataPacket = 0;
+		
+			if(this.inBuffer.length) {
+				//console.log("XSocket more data in inBuffer to send\n");
+				this.prepareDataPacket();
+				this.sendDataPacket();
+				
+				return;
+			} 
+			
+			if(this.remoteClosed) {
+				//console.log("sending close packet to C64");
+				this.sendPacketType(pt_close);
+				this.sentClosePacket = 1;
+				
+				return;
+				// } else {
+				// 	console.log("The remote side has not closed yet.");
+			}
+		} 
+		
+		else if(this.inBuffer.length) {
+			//console.log("XSocket more data in inBuffer to send\n");
+			this.prepareDataPacket();
+			this.sendDataPacket();
+			
+			return;
+		}
+	}
+
 	gotAck() {
+		if(this.ackTimer) {
+			//console.log("Got ACK. Canceling ackTimer.");
+			clearTimeout(this.ackTimer);
+			this.ackTimer 			 = null;
+			this.ackTimeoutCount = 0;
+		}
+	
 		if(this.sentClosePacket) {
 			//console.log("XSocket gotAck for close socket packet");
 			return this.close();
@@ -666,6 +806,13 @@ class cnpXSocket {
 	}
 
 	gotNak() {
+		if(this.ackTimer) {
+			//console.log("Got NAK. Canceling ackTimer.");
+			clearTimeout(this.ackTimer);
+			this.ackTimer 			 = null;
+			this.ackTimeoutCount = 0;
+		}
+	
 		if(this.sentClosePacket) {
 			this.sendPacketType(pt_close);
 			this.sentClosePacket = 1;
@@ -685,7 +832,7 @@ class cnpXSocket {
 		
 		this.inBuffer = Buffer.concat([this.inBuffer,dataBuffer],totalLength);
 		
-		if(!this.sentDataPacket) {
+		if(!this.pauseTxFlow && !this.sentDataPacket) {
 			this.prepareDataPacket();
 			this.sendDataPacket();
 		}
@@ -729,6 +876,24 @@ class cnpXSocket {
 	//In from TCP/IP Socket, out to cnpClient
 	sendDataPacket() {
 		//console.log("Sending data packet to cnpSocket.");
+
+		let self = this;
+
+		this.ackTimer = setTimeout(function() {
+			self.ackTimeoutCount++;
+			
+			if(self.ackTimeoutCount < 3) {
+				//console.log("ackTimer expired. Resending dataPacket.");
+
+				//Acknowledgement not received. Resend data packet.
+				self.sendDataPacket();
+			} else {
+				//console.log("ackTimer expired. Closing socket.");
+			
+				self.sendPacketType(pt_close);
+				self.sentClosePacket = 1;
+			}
+		},3000); //3 seconds
 
 		this.cnpClient.cnpSocket.write(this.lastDataPacket);
 		this.sentDataPacket = 1;
