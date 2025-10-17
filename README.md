@@ -10,7 +10,7 @@ Version 1.5 adds several important features.
 - Added packet acknowledgement timeouts, for packet resending.
 - This version switches from using "require" to using "import" for node modules.
 
-#MySQL
+## MySQL
 
 A MySQL database is used to store the users and their CNP username and password hash. When users attempt to sign in from C64 OS, the CNP server is authenticating them against the users stored in the users table.
 
@@ -18,20 +18,21 @@ The name, email, address, country and country_code are not technically used by C
 
 Connections to the CNP server, as well as disconnections of different types, timeouts, signouts, etc. are logged in the cnphistory table.
 
-users
-	userid
-	name
-	cnpusername
-	cnppwordsalt
-	cnppwordhash
+- users
+	- userid
+	- name
+	- cnpusername
+	- cnppwordsalt
+	- cnppwordhash
 
-cnphistory
-  cnphistoryid
-	userid
-	eventdate
-	eventtype
-	ipaddress
+- cnphistory
+	- cnphistoryid
+	- userid
+	- eventdate
+	- eventtype
+	- ipaddress
 	
+```	
 CREATE TABLE `users` (
   `userid` int NOT NULL AUTO_INCREMENT,
   `name` varchar(128) DEFAULT NULL,
@@ -54,7 +55,8 @@ CREATE TABLE `cnphistory` (
   `ipaddress` varchar(128) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL,
   PRIMARY KEY (`cnphistoryid`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb3
+```
 
-#NodeJS
+## NodeJS
 
 The CNP server has been tested to run on node v16.20.2
